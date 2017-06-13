@@ -84,5 +84,42 @@ config BMM150_SAMPLING_REP_Z
 	help
 	  Enable alteration of Z oversampling at runtime.
 
+config BMM150_TRIGGER
+	bool "Enable triggers"
+	depends on GPIO
+	default n
+	help
+	  Enable triggers for BMM150 Geomagnetic sensor
+
+config BMM150_TRIGGER_THREAD_STACK
+	int "Thread stack size"
+	depends on BMM150_TRIGGER
+	default 1024
+	help
+	  Specify the internal thread stack size.
+
+config BMM150_TRIGGER_DRDY
+	bool "Enable data ready trigger"
+	depends on BMM150_TRIGGER
+	default n
+	help
+	  Enable data ready interrupt for BMM150 Geomagnetic
+
+config BMM150_GPIO_DRDY_DEV_NAME
+	string "GPIO device where BMM150 data ready interrupt is connected"
+	depends on BMM150_TRIGGER_DRDY
+	default GPIO_16
+	help
+	  Specify the device name of the GPIO controller the BMM150 interrupt
+	  is connected to.
+
+config BMM150_GPIO_DRDY_INT_PIN
+	int
+	default 52
+	depends on BMM150_TRIGGER_DRDY
+	prompt "GPIO pin number for the data ready interrupt pin"
+	help
+	  GPIO pin number for the data ready interrupt pin.
+
 endif
 

@@ -13,8 +13,9 @@
 #define ON 1
 #define OFF 0
 
-#define GPIO_PIN_1	16
-#define GPIO_PIN_2	19
+#define GPIO_PIN_1	54
+#define GPIO_PIN_2	50
+#define GPIO_PIN_3      53
 #define GPIO_NAME	"GPIO_"
 
 #define GPIO_DRV_NAME CONFIG_GPIO_QMSI_0_NAME
@@ -38,8 +39,16 @@ void main(void)
 	if (ret) {
 		printk ("Error configuration 1");
 	}
+	ret = gpio_pin_configure(gpio_dev, GPIO_PIN_3, (GPIO_DIR_OUT));
+	if (ret) {
+		printk ("Error configuration 3");
+	}
 	while(1) {
 		ret = gpio_pin_write(gpio_dev, GPIO_PIN_1, 1);
+		if (ret) {
+			printk("Error writing 1");
+		}
+		ret = gpio_pin_write(gpio_dev, GPIO_PIN_3, 1);
 		if (ret) {
 			printk("Error writing 1");
 		}

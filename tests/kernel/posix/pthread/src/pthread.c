@@ -7,6 +7,7 @@
 #include <ztest.h>
 #include <kernel.h>
 #include <pthread.h>
+#include <semaphore.h>
 
 #define N_THR 3
 
@@ -15,6 +16,8 @@
 #define STACKSZ 1024
 
 K_THREAD_STACK_ARRAY_DEFINE(stacks, N_THR, STACKSZ);
+
+__kernel struct k_sem main_sem;
 
 void *thread_top(void *p1);
 
@@ -96,7 +99,7 @@ void *thread_top(void *p1)
 			if (curr_bounce_thread != id) {
 				printk("Racing bounce threads\n");
 				bounce_failed = 1;
-				k_sem_give(&main_sem);
+				sem_post(&main_sem);
 				pthread_mutex_unlock(&lock);
 				return NULL;
 			}
@@ -115,7 +118,7 @@ void *thread_top(void *p1)
 	 */
 	pthread_mutex_lock(&lock);
 	bounce_done[id] = 1;
-	k_sem_give(&main_sem);
+	sem_post(&main_sem);
 	pthread_cond_wait(&cvar1, &lock);
 	pthread_mutex_unlock(&lock);
 
@@ -126,12 +129,12 @@ void *thread_top(void *p1)
 		if (barrier_done[i]) {
 			printk("Barrier exited early\n");
 			barrier_failed = 1;
-			k_sem_give(&main_sem);
+			sem_post(&main_sem);
 		}
 	}
 	pthread_barrier_wait(&barrier);
 	barrier_done[id] = 1;
-	k_sem_give(&main_sem);
+	sem_post(&main_sem);
 	pthread_exit(p1);
 
 	return NULL;
@@ -193,6 +196,8 @@ void test_pthread(void)
 	zassert_false(ret,
 			"Scheduling priority outside valid priority range\n");
 
+	sem_init(&main_sem, 0, 2*N_THR);
+
 	for (i = 0; i < N_THR; i++) {
 		ret = pthread_attr_init(&attr[i]);
 
@@ -210,7 +215,7 @@ void test_pthread(void)
 	}
 
 	while (!bounce_test_done()) {
-		k_sem_take(&main_sem, K_FOREVER);
+		sem_wait(&main_sem);
 	}
 
 	/*TESTPOINT: Check if bounce test passes*/
@@ -224,7 +229,7 @@ void test_pthread(void)
 	pthread_mutex_unlock(&lock);
 
 	while (!barrier_test_done()) {
-		k_sem_take(&main_sem, K_FOREVER);
+		sem_wait(&main_sem);
 	}
 
 	/*TESTPOINT: Check if barrier test passes*/

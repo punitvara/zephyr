@@ -1,0 +1,4 @@
+tests:
+  posix.mutex:
+    tags: core
+

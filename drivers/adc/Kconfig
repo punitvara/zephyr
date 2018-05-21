@@ -13,9 +13,15 @@ menuconfig ADC
 	bool
 	prompt "ADC drivers"
 	help
-	  Enable ADC (Analog to Digital Converter) driver configuration
+	  Enable ADC (Analog to Digital Converter) driver configuration.
 
 if ADC
+
+config ADC_ASYNC
+	bool "Enable asynchronous call support"
+	select POLL
+	help
+	  This option enables the asynchronous API calls.
 
 config SYS_LOG_ADC_LEVEL
 	int

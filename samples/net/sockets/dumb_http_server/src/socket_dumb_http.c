@@ -63,7 +63,7 @@ int main(void)
 		struct sockaddr_in client_addr;
 		socklen_t client_addr_len = sizeof(client_addr);
 		char addr_str[32];
-		int req_state = 0;
+		int req_state = 0, ret;
 		const char *data;
 		size_t len;
 
@@ -84,7 +84,9 @@ int main(void)
 		while (1) {
 			char c;
 
-			recv(client, &c, 1, 0);
+			ret = recv(client, &c, 1, 0);
+			zassert_false(ret, "recv function is failed");
+
 			if (req_state == 0 && c == '\r') {
 				req_state++;
 			} else if (req_state == 1 && c == '\n') {

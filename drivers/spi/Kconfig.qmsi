@@ -23,7 +23,7 @@ config SPI_QMSI_SS
 	SPI driver implementation using QMSI library. This instance is
 	for the Sensor Subsystem.
 
-if QMSI_SS
+if SPI_QMSI_SS
 
 config SPI_SS_INIT_PRIORITY
 	int "Init priority"

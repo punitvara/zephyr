@@ -76,6 +76,9 @@ config ADC_DW_RISING_EDGE
 config ADC_DW_FALLING_EDGE
 	bool "Falling Edge"
 
+config ADC_DW_POLL
+	bool "Polling samples"
+
 endchoice
 
 config ADC_DW_SAMPLE_WIDTH

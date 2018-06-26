@@ -43,6 +43,22 @@
 extern "C" {
 #endif
 
+/*
+ * Including the right register definition file
+ * SoC SPECIFIC!
+ */
+
+#ifdef CONFIG_SOC_QUARK_SE_C1000_SS
+#include "adc_dw_quark_se_ss_regs.h"
+#else
+#include "adc_dw_regs.h"
+
+#define _extra_clock_on(...)
+#define _extra_clock_off(...)
+
+#endif
+
+
 /**
  * ADC driver name.
  *

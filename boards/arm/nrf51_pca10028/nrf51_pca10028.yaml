@@ -7,4 +7,5 @@ toolchain:
   - gccarmemb
 ram: 32
 supported:
+  - adc
   - ble

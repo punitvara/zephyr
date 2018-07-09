@@ -206,7 +206,7 @@ static void adc_dw_disable(struct device *dev)
 	struct adc_info *info = dev->driver_data;
 	const struct adc_config *config = dev->config->config_info;
 	u32_t adc_base = config->reg_base;
-
+	printk("HELLo");
 	sys_out32(ADC_INT_DSB|ENABLE_ADC, adc_base + ADC_CTRL);
 	adc_goto_deep_power_down();
 	sys_out32(ADC_INT_DSB|ADC_SEQ_PTR_RST, adc_base + ADC_CTRL);

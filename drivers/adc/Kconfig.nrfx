@@ -9,7 +9,6 @@
 config ADC_NRFX_ADC
 	bool "nRF ADC nrfx driver"
 	depends on HAS_HW_NRF_ADC
-	select HAS_DTS_ADC
 	select NRFX_ADC
 	help
 	  Enable support for nrfx ADC driver for nRF51 MCU series.
@@ -27,6 +26,5 @@ config ADC_NRFX_ADC_CHANNEL_COUNT
 config ADC_NRFX_SAADC
 	bool "nRF SAADC nrfx driver"
 	depends on HAS_HW_NRF_SAADC
-	select HAS_DTS_ADC
 	help
 	  Enable support for nrfx SAADC driver for nRF52 MCU series.

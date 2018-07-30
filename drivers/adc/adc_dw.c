@@ -16,6 +16,11 @@
 #include <adc.h>
 #include <arch/cpu.h>
 #include "adc_dw.h"
+#define ADC_CONTEXT_USES_KERNEL_TIMER
+#include "adc_context.h"
+
+#define SYS_LOG_LEVEL CONFIG_SYS_LOG_ADC_LEVEL
+#include <logging/sys_log.h>
 
 #define ADC_CLOCK_GATE      (1 << 31)
 #define ADC_POWER_DOWN       0x01
@@ -183,9 +188,7 @@ static void adc_goto_deep_power_down(void)
 static void adc_dw_enable(struct device *dev)
 {
 	u32_t reg_value;
-	struct adc_info *info = dev->driver_data;
-	const struct adc_config *config = dev->config->config_info;
-	u32_t adc_base = config->reg_base;
+	u32_t adc_base = CONFIG_ADC_0_BASE_ADDRESS;
 
 	/*Go to Normal Mode*/
 	sys_out32(ADC_INT_DSB|ENABLE_ADC, adc_base + ADC_CTRL);
@@ -196,135 +199,137 @@ static void adc_dw_enable(struct device *dev)
 	reg_value &= ~(ADC_CLOCK_GATE);
 	sys_out32(reg_value, PERIPH_ADDR_BASE_CREG_MST0);
 	sys_out32(ENABLE_ADC, adc_base + ADC_CTRL);
-
-	info->state = ADC_STATE_IDLE;
 }
 
 static void adc_dw_disable(struct device *dev)
 {
 	u32_t saved;
 	struct adc_info *info = dev->driver_data;
-	const struct adc_config *config = dev->config->config_info;
-	u32_t adc_base = config->reg_base;
-	printk("HELLo");
+
+	u32_t adc_base = CONFIG_ADC_0_BASE_ADDRESS;
+
 	sys_out32(ADC_INT_DSB|ENABLE_ADC, adc_base + ADC_CTRL);
 	adc_goto_deep_power_down();
 	sys_out32(ADC_INT_DSB|ADC_SEQ_PTR_RST, adc_base + ADC_CTRL);
 
 	saved = irq_lock();
 
-	sys_out32(sys_in32(adc_base + ADC_SET)|ADC_FLUSH_RX, adc_base + ADC_SET);
+	sys_out32(sys_in32(adc_base + ADC_SET)|ADC_FLUSH_RX,
+		  adc_base + ADC_SET);
 	irq_unlock(saved);
 
 	info->state = ADC_STATE_DISABLED;
 }
 
-static int adc_dw_read_request(struct device *dev, struct adc_seq_table *seq_tbl)
+static int set_resolution(struct device *dev, const struct adc_sequence *sequence)
 {
-	u32_t i;
-	u32_t ctrl;
 	u32_t tmp_val;
-	u32_t num_iters;
-	u32_t saved;
-	struct adc_seq_entry *entry;
-	struct adc_info *info = dev->driver_data;
-	const struct adc_config *config = dev->config->config_info;
-	u32_t adc_base = config->reg_base;
-
-	if (info->state != ADC_STATE_IDLE) {
-		return 1;
-	}
-
-	saved = irq_lock();
-	info->seq_size = seq_tbl->num_entries;
-
-	ctrl = sys_in32(adc_base + ADC_CTRL);
-	ctrl |= ADC_SEQ_PTR_RST;
-	sys_out32(ctrl, adc_base + ADC_CTRL);
+	u32_t adc_base = CONFIG_ADC_0_BASE_ADDRESS;
 
 	tmp_val = sys_in32(adc_base + ADC_SET);
-	tmp_val &= ADC_SEQ_SIZE_SET_MASK;
-	tmp_val |= (((seq_tbl->num_entries - 1) & SIX_BITS_SET)
-		<< SEQ_ENTRIES_POS);
-	tmp_val |= ((seq_tbl->num_entries - 1) << THRESHOLD_POS);
+	tmp_val &= ~FIVE_BITS_SET;
+
+	switch (sequence->resolution) {
+	case 6:
+	case 8:
+	case 10:
+	case 12:
+		break;
+	default:
+		SYS_LOG_ERR("ADC resolution value %d is not valid",
+			    sequence->resolution);
+		return -EINVAL;
+	}
+
+	tmp_val |= sequence->resolution & FIVE_BITS_SET;
+
 	sys_out32(tmp_val, adc_base + ADC_SET);
-
-	irq_unlock(saved);
-
-	num_iters = seq_tbl->num_entries/2;
-
-	for (i = 0, entry = seq_tbl->entries;
-		i < num_iters; i++, entry += 2) {
-		tmp_val = ((entry[1].sampling_delay & ELEVEN_BITS_SET)
-			<< SEQ_DELAY_ODD_POS);
-		tmp_val |= ((entry[1].channel_id & FIVE_BITS_SET)
-			<< SEQ_MUX_ODD_POS);
-		tmp_val |= ((entry[0].sampling_delay & ELEVEN_BITS_SET)
-			<< SEQ_DELAY_EVEN_POS);
-		tmp_val |= (entry[0].channel_id & FIVE_BITS_SET);
-		sys_out32(tmp_val, adc_base + ADC_SEQ);
-	}
-
-	if ((seq_tbl->num_entries % 2) != 0) {
-		tmp_val = ((entry[0].sampling_delay & ELEVEN_BITS_SET)
-			<< SEQ_DELAY_EVEN_POS);
-		tmp_val |= (entry[0].channel_id & FIVE_BITS_SET);
-		sys_out32(tmp_val, adc_base + ADC_SEQ);
-	}
-
-	sys_out32(ctrl | ADC_SEQ_PTR_RST, adc_base + ADC_CTRL);
-
-	info->entries = seq_tbl->entries;
-#ifdef CONFIG_ADC_DW_REPETITIVE
-	memset(info->index, 0, seq_tbl->num_entries);
-#endif
-	info->state = ADC_STATE_SAMPLING;
-	sys_out32(START_ADC_SEQ, adc_base + ADC_CTRL);
-
-	k_sem_take(&info->device_sync_sem, K_FOREVER);
-
-	if (info->state == ADC_STATE_ERROR) {
-		info->state = ADC_STATE_IDLE;
-		return -EIO;
-	}
 
 	return 0;
 }
 
-static int adc_dw_read(struct device *dev, struct adc_seq_table *seq_tbl)
+static int start_read(struct device *dev, const struct adc_sequence *sequence)
 {
+	int error = 0, i, channel_id;
 	struct adc_info *info = dev->driver_data;
+	u32_t selected_channels = sequence->channels;
+	u32_t ctrl, tmp_val, num_iters;
+	const struct adc_sequence *entry;
+	u32_t adc_base = CONFIG_ADC_0_BASE_ADDRESS;
 
-#ifdef CONFIG_ADC_DW_DUMMY_CONVERSION
-	if (info->dummy_conversion == ADC_NONE_DUMMY) {
-		adc_dw_read_request(dev, seq_tbl);
-		info->dummy_conversion = ADC_DONE_DUMMY;
+	/* Signal an error if channel selection is invalid (no channels or
+	 * a non-existing one is selected).
+	 */
+	if (!selected_channels ||
+		(selected_channels & ~BIT_MASK(DW_CHANNEL_COUNT))) {
+		SYS_LOG_ERR("Invalid selection of channels");
+		return -EINVAL;
 	}
-#endif
-	return adc_dw_read_request(dev, seq_tbl);
-}
+	adc_dw_enable(dev);
 
-static struct adc_driver_api api_funcs = {
-	.enable  = adc_dw_enable,
-	.disable = adc_dw_disable,
-	.read    = adc_dw_read,
-};
+	info->seq_size = sequence->options->extra_samplings + 1;
+
+	/* TODO: default channel id*/
+	channel_id = 0;
+
+	/* Enable only the channels selected for the pointed sequence.
+	 * Disable all the rest.
+	 */
+
+	num_iters = (sequence->options->extra_samplings +1)/2;
+
+	ctrl = sys_in32(adc_base + ADC_CTRL);
+
+	for(i = 0, entry = sequence; i < num_iters; i++, entry +=2) {
+		tmp_val = ((sequence->options->interval_us & ELEVEN_BITS_SET)
+                        << SEQ_DELAY_ODD_POS);
+		tmp_val |= ((m_data.positive_inputs[channel_id] & FIVE_BITS_SET)
+                        << SEQ_MUX_ODD_POS);
+                tmp_val |= ((sequence->options->interval_us & ELEVEN_BITS_SET)
+                        << SEQ_DELAY_EVEN_POS);
+                tmp_val |= (m_data.positive_inputs[channel_id] & FIVE_BITS_SET);
+                sys_out32(tmp_val, adc_base + ADC_SEQ);
+	}
+
+	if (((sequence->options->extra_samplings + 1) % 2) != 0) {
+		tmp_val = ((sequence->options->interval_us & ELEVEN_BITS_SET)
+                        << SEQ_DELAY_EVEN_POS);
+                tmp_val |= (m_data.positive_inputs[channel_id] & FIVE_BITS_SET);
+                sys_out32(tmp_val, adc_base + ADC_SEQ);
+	}
+
+	sys_out32(ctrl | ADC_SEQ_PTR_RST, adc_base + ADC_CTRL);
+
+	info->entries = sequence;
+
+	error = set_resolution(dev, sequence);
+	if (error) {
+		return error;
+	}
+
+	adc_context_start_read(&m_data.ctx, sequence);
+
+	error = adc_context_wait_for_completion(&m_data.ctx);
+
+	adc_dw_disable(dev);
+	adc_context_release(&m_data.ctx, error);
+
+	return error;
+}
 
 int adc_dw_init(struct device *dev)
 {
 	u32_t tmp_val;
 	u32_t val;
 	const struct adc_config *config = dev->config->config_info;
-	u32_t adc_base = config->reg_base;
+	u32_t adc_base = CONFIG_ADC_0_BASE_ADDRESS;
 	struct adc_info *info = dev->driver_data;
 
 	sys_out32(ADC_INT_DSB | ADC_CLK_ENABLE, adc_base + ADC_CTRL);
 
 	tmp_val = sys_in32(adc_base + ADC_SET);
 	tmp_val &= ADC_CONFIG_SET_MASK;
-	val = (config->sample_width) & FIVE_BITS_SET;
-	val &= ~(1 << INPUT_MODE_POS);
-	val |= ((config->capture_mode & ONE_BIT_SET) << CAPTURE_MODE_POS);
+	val = ((config->capture_mode & ONE_BIT_SET) << CAPTURE_MODE_POS);
 	val |= ((config->out_mode & ONE_BIT_SET) << OUTPUT_MODE_POS);
 	val |= ((config->serial_dly & FIVE_BITS_SET) << SERIAL_DELAY_POS);
 	val |= ((config->seq_mode & ONE_BIT_SET) << SEQUENCE_MODE_POS);
@@ -342,6 +347,7 @@ int adc_dw_init(struct device *dev)
 
 	int_unmask(config->reg_irq_mask);
 	int_unmask(config->reg_err_mask);
+	adc_context_unlock_unconditionally(&m_data.ctx);
 
 	return 0;
 }
@@ -350,35 +356,11 @@ int adc_dw_init(struct device *dev)
 static void adc_dw_rx_isr(void *arg)
 {
 	struct device *dev = (struct device *)arg;
-	struct device_config *dev_config = dev->config;
-	const struct adc_config *config = dev_config->config_info;
-	struct adc_info *info = dev->driver_data;
-	u32_t adc_base = config->reg_base;
-	struct adc_seq_entry *entries = info->entries;
-	u32_t reg_val;
-	u32_t seq_index;
 
-	for (seq_index = 0; seq_index < info->seq_size; seq_index++) {
-		u32_t *adc_buffer;
-
-		reg_val = sys_in32(adc_base + ADC_SET);
-		sys_out32(reg_val|ADC_POP_SAMPLE, adc_base + ADC_SET);
-		adc_buffer = (u32_t *)entries[seq_index].buffer;
-		*adc_buffer = sys_in32(adc_base + ADC_SAMPLE);
-	}
-
-	/*Resume ADC state to continue new conversions*/
-	sys_out32(RESUME_ADC_CAPTURE, adc_base + ADC_CTRL);
-	reg_val = sys_in32(adc_base + ADC_SET);
-	sys_out32(reg_val | ADC_FLUSH_RX, adc_base + ADC_SET);
-	info->state = ADC_STATE_IDLE;
-
-	/*Clear data A register*/
-	reg_val = sys_in32(adc_base + ADC_CTRL);
-	sys_out32(reg_val | ADC_CLR_DATA_A, adc_base + ADC_CTRL);
-
-	k_sem_give(&info->device_sync_sem);
+	adc_context_start_sampling(&m_data.ctx);
+	adc_context_on_sampling_done(&m_data.ctx, dev);
 }
+
 #else /*CONFIG_ADC_DW_REPETITIVE*/
 static void adc_dw_rx_isr(void *arg)
 {
@@ -386,19 +368,23 @@ static void adc_dw_rx_isr(void *arg)
 	struct device_config *dev_config = dev->config;
 	const struct adc_config *config = dev_config->config_info;
 	struct adc_info *info = dev->driver_data;
-	u32_t adc_base = config->reg_base;
-	struct adc_seq_entry *entries = info->entries;
+	u32_t adc_base = CONFIG_ADC_0_BASE_ADDRESS;
+	struct adc_sequence *entries = info->entries;
 	u32_t reg_val;
 	u32_t sequence_index;
 	u8_t full_buffer_flag = 0;
 
-	for (sequence_index = 0; sequence_index < info->seq_size; sequence_index++) {
+	for (sequence_index = 0;
+	     sequence_index < info->seq_size; sequence_index++) {
 		u32_t *adc_buffer;
 		u32_t repetitive_index;
 
 		repetitive_index = info->index[sequence_index];
-		/*API array is 8 bits array but ADC reads blocks of 32 bits with every sample.*/
-		if (repetitive_index >= (entries[sequence_index].buffer_length >> 2)) {
+		/*API array is 8 bits array but ADC reads blocks
+		 * of 32 bits with every sample.
+		 */
+		if (repetitive_index >=
+		    (entries[sequence_index].buffer_length >> 2)) {
 			full_buffer_flag = 1;
 			continue;
 		}
@@ -421,7 +407,8 @@ static void adc_dw_rx_isr(void *arg)
 		reg_val = sys_in32(adc_base + ADC_CTRL);
 		sys_out32(reg_val | ADC_CLR_DATA_A, adc_base + ADC_CTRL);
 
-		k_sem_give(&info->device_sync_sem);
+		adc_context_on_sampling_done(&m_data.ctx, dev);
+
 		return;
 	}
 
@@ -431,15 +418,44 @@ static void adc_dw_rx_isr(void *arg)
 }
 #endif
 
+/* Implementation of the ADC driver API function: adc_channel_setup. */
+static int adc_dw_channel_setup(struct device *dev,
+				const struct adc_channel_cfg *channel_cfg)
+{
+	u8_t channel_id = channel_cfg->channel_id;
+	u32_t tmp_val, ctrl;
+	int saved;
+	u32_t adc_base = CONFIG_ADC_0_BASE_ADDRESS;
+
+	if (channel_id >= DW_CHANNEL_COUNT) {
+		return -EINVAL;
+	}
+
+	tmp_val = sys_in32(adc_base + ADC_SET);
+	/*
+	 * TODO: Differential mode, pass appropriate value instead 1
+	 * once that is implemented
+	 */
+	tmp_val &= ~(1 << INPUT_MODE_POS);
+	sys_out32(tmp_val, adc_base + ADC_SET);
+
+	m_data.positive_inputs[channel_id] = channel_cfg->input_positive;
+
+	saved = irq_lock();
+
+        ctrl = sys_in32(adc_base + ADC_CTRL);
+        ctrl |= ADC_SEQ_PTR_RST;
+        sys_out32(ctrl, adc_base + ADC_CTRL);
+
+	return 0;
+}
 
 static void adc_dw_err_isr(void *arg)
 {
 	struct device *dev = (struct device *) arg;
-	const struct adc_config  *config = dev->config->config_info;
 	struct adc_info    *info   = dev->driver_data;
-	u32_t adc_base = config->reg_base;
+	u32_t adc_base = CONFIG_ADC_0_BASE_ADDRESS;
 	u32_t reg_val = sys_in32(adc_base + ADC_SET);
-
 
 	sys_out32(RESUME_ADC_CAPTURE, adc_base + ADC_CTRL);
 	sys_out32(reg_val | ADC_FLUSH_RX, adc_base + ADC_CTRL);
@@ -447,8 +463,63 @@ static void adc_dw_err_isr(void *arg)
 
 	info->state = ADC_STATE_ERROR;
 
-	k_sem_give(&info->device_sync_sem);
+	adc_context_on_sampling_done(&m_data.ctx, dev);
 }
+
+
+
+static void adc_context_start_sampling(struct adc_context *ctx)
+{
+	u32_t adc_base = CONFIG_ADC_0_BASE_ADDRESS;
+	const struct adc_sequence *entries = ctx->sequence;
+	u32_t reg_val;
+	u32_t *adc_buffer;
+
+	ARG_UNUSED(ctx);
+
+	/* start sequencer */
+	sys_out32(START_ADC_SEQ, adc_base + ADC_CTRL);
+
+	reg_val = sys_in32(adc_base + ADC_SET);
+	sys_out32(reg_val|ADC_POP_SAMPLE, adc_base + ADC_SET);
+	
+	adc_buffer = (u32_t *)entries[ctx->sampling_index].buffer;
+	*adc_buffer = sys_in32(adc_base + ADC_SAMPLE);
+
+	/*Resume ADC state to continue new conversions*/
+	sys_out32(RESUME_ADC_CAPTURE, adc_base + ADC_CTRL);
+	reg_val = sys_in32(adc_base + ADC_SET);
+	sys_out32(reg_val | ADC_FLUSH_RX, adc_base + ADC_SET);
+
+	/*Clear data A register*/
+	reg_val = sys_in32(adc_base + ADC_CTRL);
+	sys_out32(reg_val | ADC_CLR_DATA_A, adc_base + ADC_CTRL);
+}
+
+static void adc_context_update_buffer_pointer(struct adc_context *ctx,
+					      bool repeat)
+{
+	ARG_UNUSED(ctx);
+}
+
+/* Implementation of the ADC driver API function: adc_read. */
+static int adc_dw_read(struct device *dev,
+		       const struct adc_sequence *sequence)
+{
+	adc_context_lock(&m_data.ctx, false, NULL);
+	return start_read(dev, sequence);
+}
+
+#ifdef CONFIG_ADC_ASYNC
+/* Implementation of the ADC driver API function: adc_read_async. */
+static int adc_dw_read_async(struct device *dev,
+			     const struct adc_sequence *sequence,
+			     struct k_poll_signal *async)
+{
+	adc_context_lock(&m_data.ctx, true, async);
+	return start_read(dev, sequence);
+}
+#endif
 
 #ifdef CONFIG_ADC_DW
 
@@ -463,7 +534,6 @@ struct adc_info adc_info_dev = {
 	};
 
 static struct adc_config adc_config_dev = {
-		.reg_base = PERIPH_ADDR_BASE_ADC,
 		.reg_irq_mask = SCSS_REGISTER_BASE + INT_SS_ADC_IRQ_MASK,
 		.reg_err_mask = SCSS_REGISTER_BASE + INT_SS_ADC_ERR_MASK,
 #ifdef CONFIG_ADC_DW_SERIAL
@@ -481,11 +551,18 @@ static struct adc_config adc_config_dev = {
 #elif CONFIG_ADC_DW_FALLING_EDGE
 		.capture_mode = 1,
 #endif
-		.sample_width = CONFIG_ADC_DW_SAMPLE_WIDTH,
 		.clock_ratio  = CONFIG_ADC_DW_CLOCK_RATIO,
 		.serial_dly   = CONFIG_ADC_DW_SERIAL_DELAY,
 		.config_func  = adc_config_irq,
 	};
+
+static const struct adc_driver_api api_funcs = {
+	.channel_setup = adc_dw_channel_setup,
+	.read          = adc_dw_read,
+#ifdef CONFIG_ADC_ASYNC
+	.read_async    = adc_dw_read_async,
+#endif
+};
 
 DEVICE_AND_API_INIT(adc_dw, CONFIG_ADC_0_NAME, &adc_dw_init,
 		    &adc_info_dev, &adc_config_dev,
@@ -494,12 +571,12 @@ DEVICE_AND_API_INIT(adc_dw, CONFIG_ADC_0_NAME, &adc_dw_init,
 
 static void adc_config_irq(void)
 {
-	IRQ_CONNECT(CONFIG_IRQ_ADC_IRQ, CONFIG_ADC_0_IRQ_PRI, adc_dw_rx_isr,
+	IRQ_CONNECT(CONFIG_ADC_0_IRQ, CONFIG_ADC_0_IRQ_PRI, adc_dw_rx_isr,
 		    DEVICE_GET(adc_dw), 0);
-	irq_enable(CONFIG_IRQ_ADC_IRQ);
+	irq_enable(CONFIG_ADC_0_IRQ);
 
-	IRQ_CONNECT(CONFIG_IRQ_ADC_ERR, CONFIG_ADC_0_IRQ_PRI,
+	IRQ_CONNECT(CONFIG_ADC_IRQ_ERR, CONFIG_ADC_0_IRQ_PRI,
 		    adc_dw_err_isr, DEVICE_GET(adc_dw), 0);
-	irq_enable(CONFIG_IRQ_ADC_ERR);
+	irq_enable(CONFIG_ADC_IRQ_ERR);
 }
 #endif

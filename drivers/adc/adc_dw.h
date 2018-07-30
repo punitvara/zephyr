@@ -77,6 +77,7 @@ extern "C" {
 #define     ADC_SEQ_SIZE_SET_MASK       (0x3fc0ffff)
 #define     ADC_SEQ_MODE_SET_MASK       (0x3fffdfff)
 #define     ADC_CONFIG_SET_MASK         (0x3fffe000)
+#define	    ADC_CONFIG_IN_MASK		(0x3fffff1f)
 #define     ADC_CLK_RATIO_MASK          (0x1fffff)
 #define     ADC_CLR_UNDRFLOW            (1 << 18)
 #define     ADC_CLR_OVERFLOW            (1 << 17)
@@ -108,6 +109,13 @@ extern "C" {
 #define ADC_CMD_START_CALIBRATION 3
 #define ADC_CMD_LOAD_CALIBRATION 4
 
+
+/* Resolution or Sample Width*/
+#define DW_RESOLUTION_6BIT (6)
+#define DW_RESOLUTION_8BIT (8)
+#define DW_RESOLUTION_10BIT (10)
+#define DW_RESOLUTION_12BIT (12)
+
 /* ADC control commands */
 #define IO_ADC0_FS (32)
 #define IO_ADC0_SE (32)
@@ -138,6 +146,8 @@ extern "C" {
 /** mV = 3.3V*/
 #define ADC_VREF 3300
 
+#define DW_CHANNEL_COUNT 16
+
 /**
  *
  * @brief Converts ADC raw data into mV
@@ -159,12 +169,12 @@ typedef void (*adc_dw_config_t)(void);
  * that define the ADC hardware instance and configuration.
  */
 struct adc_config {
-	/**Register base address for hardware registers.*/
-	u32_t reg_base;
 	/**IIO address for the IRQ mask register.*/
 	u32_t reg_irq_mask;
 	/**IIO address for the error mask register.*/
 	u32_t reg_err_mask;
+	/**Input mode*/
+	u8_t in_mode;
 	/**Output mode*/
 	u8_t  out_mode;
 	/**Capture mode*/
@@ -173,8 +183,6 @@ struct adc_config {
 	u8_t  seq_mode;
 	/**Serial delay*/
 	u8_t  serial_dly;
-	/**Sample width*/
-	u8_t  sample_width;
 	u8_t  padding[3];
 	/**Clock ratio*/
 	u32_t clock_ratio;
@@ -194,7 +202,7 @@ struct adc_info {
 	u8_t  index[BUFS_NUM];
 #endif
 	/**Sequence entries' array*/
-	struct adc_seq_entry *entries;
+	const struct adc_sequence *entries;
 	/**State of execution of the driver*/
 	u8_t  state;
 	/**Sequence size*/

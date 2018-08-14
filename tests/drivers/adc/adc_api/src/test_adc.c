@@ -40,6 +40,17 @@
 #define ADC_CHANNEL_0_INPUT	NRF_SAADC_INPUT_AIN1
 #define ADC_CHANNEL_2_INPUT	NRF_SAADC_INPUT_AIN2
 
+#elif defined(CONFIG_ARC)
+
+#define ADC_DEVICE_NAME		CONFIG_ADC_0_NAME
+/*Read channel 10*/
+#define ADC_CHANNEL_0_INPUT	10
+#define ADC_RESOLUTION		11
+#define ADC_GAIN		ADC_GAIN_1_3
+#define ADC_ACQUISITION_TIME	ADC_ACQ_TIME_DEFAULT
+
+#define ADC_REFERENCE		ADC_REF_INTERNAL
+
 #else
 #error "Unsupported board."
 #endif

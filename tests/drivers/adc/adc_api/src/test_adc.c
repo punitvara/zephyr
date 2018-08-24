@@ -106,7 +106,7 @@
 
 #elif defined(CONFIG_ARC)
 #define ADC_DEVICE_NAME		CONFIG_ADC_0_NAME
-#define ADC_RESOLUTION		10
+#define ADC_RESOLUTION		5
 #define ADC_GAIN		ADC_GAIN_1
 #define ADC_REFERENCE		ADC_REF_INTERNAL
 #define ADC_ACQUISITION_TIME	ADC_ACQ_TIME_DEFAULT
@@ -143,7 +143,10 @@ static const struct adc_channel_cfg m_2nd_channel_cfg = {
 static struct device *init_adc(void)
 {
 	int ret;
-	struct device *adc_dev = device_get_binding(ADC_DEVICE_NAME);
+	struct device *adc_dev;
+
+	printk("start: %s\n", __func__);
+	adc_dev  = device_get_binding(ADC_DEVICE_NAME);
 
 	zassert_not_null(adc_dev, "Cannot get ADC device");
 
@@ -159,6 +162,7 @@ static struct device *init_adc(void)
 
 	memset(m_sample_buffer, 0, sizeof(m_sample_buffer));
 
+	printk("end %s\n", __func__);
 	return adc_dev;
 }
 
@@ -207,6 +211,7 @@ static int test_task_one_channel(void)
 
 	struct device *adc_dev = init_adc();
 
+	printk("start: %s\n", __func__);
 	if (!adc_dev) {
 		return TC_FAIL;
 	}
@@ -214,6 +219,7 @@ static int test_task_one_channel(void)
 	ret = adc_read(adc_dev, &sequence);
 	zassert_equal(ret, 0, "adc_read() failed with code %d", ret);
 
+	printk("mid: %s\n", __func__);
 	check_samples(1);
 
 	return TC_PASS;

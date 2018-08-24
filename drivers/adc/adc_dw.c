@@ -54,6 +54,16 @@
 #endif
 static void adc_config_irq(void);
 
+void read_register()
+{
+	int adc_base = 0x80015000;
+	printk(" set = %x dvseqclk = %x  seq = %x ctrl = %x instat = %x\n", sys_in32(adc_base + ADC_SET),
+		sys_in32(adc_base + ADC_DIVSEQSTAT),
+		sys_in32(adc_base + ADC_SEQ),
+		sys_in32(adc_base + ADC_CTRL),
+		sys_in32(adc_base + ADC_INTSTAT));
+
+}
 
 struct adc_info adc_info_dev = {
 		ADC_CONTEXT_INIT_TIMER(adc_info_dev, ctx),
@@ -358,7 +368,9 @@ static void adc_context_start_sampling(struct adc_context *ctx)
 	u32_t tmp_val;
 	u32_t ctrl;
 
-	adc_dw_enable(info->dev);
+	printk("START %s\n",__func__);	
+	read_register();
+	//adc_dw_enable(info->dev);
 	ctrl = sys_in32(adc_base + ADC_CTRL);
 	ctrl |= ADC_SEQ_PTR_RST;
 	sys_out32(ctrl, adc_base + ADC_CTRL);
@@ -373,8 +385,13 @@ static void adc_context_start_sampling(struct adc_context *ctx)
 
 	sys_out32(tmp_val, adc_base + ADC_SEQ);
 	sys_out32(ctrl | ADC_SEQ_PTR_RST, adc_base + ADC_CTRL);
-
-	sys_out32(START_ADC_SEQ, adc_base + ADC_CTRL);
+	sys_out32(0x0002005,adc_base + ADC_SET);
+	
+	sys_out32(0x16, adc_base + ADC_CTRL);
+	//sys_out32(START_ADC_SEQ, adc_base + ADC_CTRL);
+	
+	read_register();
+	printk("END %s\n\n",__func__);	
 }
 
 static void adc_context_update_buffer_pointer(struct adc_context *ctx,
@@ -394,7 +411,8 @@ int adc_dw_init(struct device *dev)
 	const struct adc_config *config = dev->config->config_info;
 	u32_t adc_base = config->reg_base;
 	struct adc_info *info = dev->driver_data;
-
+	printk("START INIT\n");
+	read_register();
 	sys_out32(ADC_INT_DSB | ADC_CLK_ENABLE, adc_base + ADC_CTRL);
 
 	tmp_val = sys_in32(adc_base + ADC_SET);
@@ -406,17 +424,28 @@ int adc_dw_init(struct device *dev)
 	val &= ~(1 << INPUT_MODE_POS);
 	sys_out32(tmp_val|val, adc_base + ADC_SET);
 
+	tmp_val = sys_in32(adc_base + ADC_SET);
+	tmp_val &= ~FIVE_BITS_SET;
+
+	tmp_val |= 5 & FIVE_BITS_SET;
+
+	sys_out32(tmp_val, adc_base + ADC_SET);
+
+	
+	sys_out32(ADC_INT_ENABLE & (ADC_CLK_ENABLE),
+		adc_base + ADC_CTRL);
+
 	sys_out32(config->clock_ratio & ADC_CLK_RATIO_MASK,
 		adc_base + ADC_DIVSEQSTAT);
 
-	sys_out32(ADC_INT_ENABLE & ~(ADC_CLK_ENABLE),
-		adc_base + ADC_CTRL);
+	adc_dw_enable(dev);
 
 	config->config_func();
 
 	int_unmask(config->reg_irq_mask);
 	int_unmask(config->reg_err_mask);
 
+	read_register();
 	info->dev = dev;
 
 	adc_context_unlock_unconditionally(&info->ctx);
@@ -432,6 +461,9 @@ static void adc_dw_rx_isr(void *arg)
 	u32_t reg_val;
 	u16_t *adc_buffer;
 
+	printk("START %s\n",__func__);	
+	read_register();
+	
 	reg_val = sys_in32(adc_base + ADC_SET);
 	sys_out32(reg_val|ADC_POP_SAMPLE, adc_base + ADC_SET);
 	adc_buffer = (u16_t *)info->buffer;
@@ -447,6 +479,9 @@ static void adc_dw_rx_isr(void *arg)
 	sys_out32(reg_val | ADC_CLR_DATA_A, adc_base + ADC_CTRL);
 
 	info->state = ADC_STATE_IDLE;
+	
+	read_register();
+	printk("END %s\n\n",__func__);	
 
 	adc_context_on_sampling_done(&info->ctx, dev);
 }
@@ -457,13 +492,26 @@ static void adc_dw_err_isr(void *arg)
 	const struct adc_config  *config = dev->config->config_info;
 	struct adc_info *info   = dev->driver_data;
 	u32_t adc_base = config->reg_base;
-	u32_t reg_val = sys_in32(adc_base + ADC_SET);
+	u16_t *adc_buffer;
+	u32_t reg_val;
+	
+	printk("START %s\n",__func__);	
+	read_register();
 
+	reg_val = sys_in32(adc_base + ADC_SET);
+	sys_out32(reg_val|ADC_POP_SAMPLE, adc_base + ADC_SET);
+	adc_buffer = (u16_t *)info->buffer;
+	*adc_buffer = sys_in32(adc_base + ADC_SAMPLE);
+
+	reg_val = sys_in32(adc_base + ADC_SET);
 	sys_out32(RESUME_ADC_CAPTURE, adc_base + ADC_CTRL);
 	sys_out32(reg_val | ADC_FLUSH_RX, adc_base + ADC_CTRL);
 	sys_out32(FLUSH_ADC_ERRORS, adc_base + ADC_CTRL);
 
-	info->state = ADC_STATE_ERROR;
+	info->state = ADC_STATE_IDLE;
+	//info->state = ADC_STATE_ERROR;
+	read_register();
+	printk("END %s\n\n",__func__);	
 	adc_context_on_sampling_done(&info->ctx, dev);
 }
 

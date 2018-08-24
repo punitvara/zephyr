@@ -23,6 +23,10 @@ extern void test_adc_repeated_samplings(void);
 
 void test_main(void)
 {
+
+#if 1
+	test_adc_sample_one_channel();
+#else
 	ztest_test_suite(adc_basic_test,
 			 ztest_unit_test(test_adc_sample_one_channel),
 			 ztest_unit_test(test_adc_sample_two_channels),
@@ -30,4 +34,5 @@ void test_main(void)
 			 ztest_unit_test(test_adc_sample_with_interval),
 			 ztest_unit_test(test_adc_repeated_samplings));
 	ztest_run_test_suite(adc_basic_test);
+#endif
 }

@@ -64,7 +64,7 @@ config ADC_DW_SERIAL_DELAY
 
 config ADC_DW_CLOCK_RATIO
 	int "Clock Ratio"
-	default 1024
+	default 100
 	help
 	  ADC Clock Ratio
 

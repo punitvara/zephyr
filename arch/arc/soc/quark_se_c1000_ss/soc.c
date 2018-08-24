@@ -13,6 +13,7 @@
 
 #include <kernel.h>
 #include "soc.h"
+#include "ss_clk.h"
 #include <init.h>
 
 /**
@@ -25,6 +26,8 @@ static int quark_se_arc_init(struct device *arg)
 	ARG_UNUSED(arg);
 
 	_quark_se_ss_ready();
+	ss_clk_adc_enable();
+	
 
 	return 0;
 }

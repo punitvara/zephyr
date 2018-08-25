@@ -6,13 +6,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-menuconfig ADC_QMSI
-	bool "QMSI ADC Driver"
-	depends on QMSI
-	select ADC_0
-	help
-	  Enable the driver implementation of the QMSI ADC IP.
-
 menuconfig ADC_QMSI_SS
 	bool "QMSI ADC Driver for the Sensor Subsystem"
 	depends on QMSI
@@ -20,7 +13,7 @@ menuconfig ADC_QMSI_SS
 	help
 	  Enable the driver implementation of the QMSI ADC IP.
 
-if ADC_QMSI || ADC_QMSI_SS
+if ADC_QMSI
 
 choice
 	prompt "Capturing Mode"
@@ -75,20 +68,4 @@ config ADC_QMSI_SAMPLE_WIDTH
 	  - 3 = 12 bits resolution
 endif
 
-if ADC_QMSI_SS
-config ADC_QMSI_SAMPLE_WIDTH
-	int "Sample Width"
-	default 11
-	help
-	  Defines ADC device data sample width (resolution):
-
-	  - 5 = 6 bits resolution
-
-	  - 7 = 8 bits resolution
-
-	  - 9 = 10 bits resolution
-
-	  - 11 = 12 bits resolution
-endif
-
-endif # ADC_QMSI || ADC_QMSI_SS
+endif # ADC_QMSI

@@ -11,6 +11,7 @@
 #
 menuconfig ADC
 	bool "ADC drivers"
+	select HAS_DTS_ADC
 	help
 	  Enable ADC (Analog to Digital Converter) driver configuration
 

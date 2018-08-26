@@ -15,6 +15,9 @@
 #include <adc.h>
 #include <arch/cpu.h>
 #include <atomic.h>
+#define ADC_CONTEXT_USES_KERNEL_TIMER
+#include "adc_context.h"
+#include <logging/sys_log.h>
 
 #include "qm_isr.h"
 #include "qm_adc.h"
@@ -27,199 +30,293 @@ enum {
 };
 
 struct adc_info  {
-	atomic_t  state;
-	struct k_sem device_sync_sem;
 	struct k_sem sem;
+	struct adc_context ctx;
+	struct device *dev;
+	struct k_delayed_work new_work;
+	struct k_work_q workq;
+	struct k_work work;
+	/**Sequence entries' array*/
+	const struct adc_sequence *entries;
+
+	u32_t active_channels;
+	u32_t channels;
+	u32_t channel_id;
+	u8_t  state;
+
+	/**Sequence size*/
+	u8_t seq_size;
+	u16_t *buffer;
 };
 
+#define STACK_SIZE 512
+static K_THREAD_STACK_DEFINE(tstack, STACK_SIZE);
 static void adc_config_irq(void);
 static qm_adc_config_t cfg;
 
+static struct adc_info adc_info_dev = {
+	ADC_CONTEXT_INIT_TIMER(adc_info_dev, ctx),
+	ADC_CONTEXT_INIT_LOCK(adc_info_dev, ctx),
+	ADC_CONTEXT_INIT_SYNC(adc_info_dev, ctx),
+	.state = ADC_STATE_IDLE,
+};
+
+static void adc_lock(struct adc_info *info)
+{
+	k_sem_take(&info->sem, K_FOREVER);
+
+}
+
+static void adc_unlock(struct adc_info *info)
+{
+	k_sem_give(&info->sem);
+
+}
 #if (CONFIG_ADC_QMSI_INTERRUPT)
-static struct adc_info *adc_context;
+static int adc_qmsi_start_conversion(struct device *dev);
+static void new_work_handler(struct k_work *workq)
+{
+	struct adc_info *info = &adc_info_dev;
+	
+	//struct adc_info *info = CONTAINER_OF(workq, struct adc_info, workq);
+	info->channels &= ~BIT(info->channel_id);
+	info->buffer++;
+
+	if (info->channels) {
+		adc_qmsi_start_conversion(info->dev);
+	} else {
+		adc_context_on_sampling_done(&info->ctx, info->dev);
+	}
+
+}
+
 
 static void complete_callback(void *data, int error, qm_adc_status_t status,
 			      qm_adc_cb_source_t source)
 {
-	if (adc_context) {
-		if (error) {
-			adc_context->state = ADC_STATE_ERROR;
-		}
-		k_sem_give(&adc_context->device_sync_sem);
+	struct device *dev = (struct device *)data;
+	struct adc_info *info = dev->driver_data;
+
+	if (!info) {
+		printk("info null!\n");
+		adc_unlock(info);
+		return;
 	}
+
+	if (error) {
+		printk("ADC Conversion error %d\n", error);
+		info->state = ADC_STATE_ERROR;
+		adc_context_on_sampling_done(&info->ctx, dev);
+		adc_unlock(info);
+		return;
+	}
+
+	info->state = ADC_STATE_IDLE;
+	adc_unlock(info);
+	k_delayed_work_submit_to_queue(&info->workq, &info->new_work, 1);
 }
 
 #endif
 
-static void adc_lock(struct adc_info *data)
-{
-	k_sem_take(&data->sem, K_FOREVER);
-	data->state = ADC_STATE_BUSY;
-
-}
-static void adc_unlock(struct adc_info *data)
-{
-	k_sem_give(&data->sem);
-	data->state = ADC_STATE_IDLE;
-
-}
 #if (CONFIG_ADC_QMSI_CALIBRATION)
 static void adc_qmsi_enable(struct device *dev)
 {
-	struct adc_info *info = dev->driver_data;
-
-	adc_lock(info);
 	qm_adc_set_mode(QM_ADC_0, QM_ADC_MODE_NORM_CAL);
 	qm_adc_calibrate(QM_ADC_0);
-	adc_unlock(info);
 }
 
 #else
 static void adc_qmsi_enable(struct device *dev)
 {
-	struct adc_info *info = dev->driver_data;
-
-	adc_lock(info);
 	qm_adc_set_mode(QM_ADC_0, QM_ADC_MODE_NORM_NO_CAL);
-	adc_unlock(info);
 }
 #endif /* CONFIG_ADC_QMSI_CALIBRATION */
 
-static void adc_qmsi_disable(struct device *dev)
+static int adc_qmsi_start_conversion(struct device *dev)
 {
 	struct adc_info *info = dev->driver_data;
+	qm_adc_xfer_t xfer;
+	int ret = 0;
+
+	info->channel_id = find_lsb_set(info->channels) - 1;
+	xfer.ch = (qm_adc_channel_t *)&info->channel_id;
+	/* Just one channel at the time using the Zephyr sequence table */
+	xfer.ch_len = 1;
+	xfer.samples_len = 1;
+	xfer.samples = (qm_adc_sample_t *)info->buffer;
+
+	xfer.callback = complete_callback;
+	xfer.callback_data = (void *)dev;
+
+	/* This is the interrupt driven API, will generate and interrupt and
+	 * call the complete_callback function once the samples have been
+	 * obtained
+	 */
+	if (qm_adc_irq_convert(QM_ADC_0, &xfer) != 0) {
+		ret =  -EIO;
+		adc_unlock(info);
+	}
 
 	adc_lock(info);
-	/* Go to deep sleep */
-	qm_adc_set_mode(QM_ADC_0, QM_ADC_MODE_DEEP_PWR_DOWN);
-	adc_unlock(info);
+	return ret;
 }
 
-#if (CONFIG_ADC_QMSI_POLL)
-static int adc_qmsi_read(struct device *dev, struct adc_seq_table *seq_tbl)
+static inline int set_resolution(struct device *dev,
+			   const struct adc_sequence *sequence)
 {
-	int i, ret = 0;
-	qm_adc_xfer_t xfer;
-	qm_adc_status_t status;
-
-	struct adc_info *info = dev->driver_data;
-
-
-	for (i = 0; i < seq_tbl->num_entries; i++) {
-
-		xfer.ch = (qm_adc_channel_t *)&seq_tbl->entries[i].channel_id;
-		/* Just one channel at the time using the Zephyr sequence table
-		 */
-		xfer.ch_len = 1;
-		xfer.samples = (qm_adc_sample_t *)seq_tbl->entries[i].buffer;
-
-		/* buffer length (bytes) the number of samples, the QMSI Driver
-		 * does not allow more than QM_ADC_FIFO_LEN samples at the time
-		 * in polling mode, if that happens, the qm_adc_convert api will
-		 * return with an error
-		 */
-		xfer.samples_len =
-		  (seq_tbl->entries[i].buffer_length)/sizeof(qm_adc_sample_t);
-
-		xfer.callback = NULL;
-		xfer.callback_data = NULL;
-
-		cfg.window = seq_tbl->entries[i].sampling_delay;
-
-		adc_lock(info);
-
-		if (qm_adc_set_config(QM_ADC_0, &cfg) != 0) {
-			ret =  -EINVAL;
-			adc_unlock(info);
-			break;
-		}
-
-		/* Run the conversion, here the function will poll for the
-		 * samples. The function will constantly read  the status
-		 * register to check if the number of samples required has been
-		 * captured
-		 */
-		if (qm_adc_convert(QM_ADC_0, &xfer, &status) != 0) {
-			ret =  -EIO;
-			adc_unlock(info);
-			break;
-		}
-
-		/* Successful Analog to Digital conversion */
-		adc_unlock(info);
+	switch (sequence->resolution) {
+	case 6:
+		cfg.resolution = QM_ADC_RES_6_BITS;
+		break;
+	case 8:
+		cfg.resolution = QM_ADC_RES_8_BITS;
+		break;
+	case 10:
+		cfg.resolution = QM_ADC_RES_10_BITS;
+		break;
+	case 12:
+		cfg.resolution = QM_ADC_RES_12_BITS;
+		break;
+	default:
+		return -EINVAL;
 	}
+
+	if (sequence->options) {
+		cfg.window = sequence->options->interval_us;
+	}
+
+	return 0;
+}
+
+static int adc_qmsi_read_request(struct device *dev,
+			       const struct adc_sequence *seq_tbl)
+{
+	struct adc_info *info = dev->driver_data;
+	int error = 0;
+	u32_t saved;
+
+	/*hardware requires minimum 10 us delay between consecutive samples*/
+	if (seq_tbl->options &&
+	    seq_tbl->options->extra_samplings &&
+	    seq_tbl->options->interval_us < 10) {
+		return -EINVAL;
+	}
+
+	info->channels = seq_tbl->channels & info->active_channels;
+
+	if (seq_tbl->channels != info->channels) {
+		return -EINVAL;
+	}
+
+	error = set_resolution(dev, seq_tbl);
+	if (error) {
+		return error;
+	}
+
+	saved = irq_lock();
+	info->entries = seq_tbl;
+	info->buffer = (u16_t *)seq_tbl->buffer;
+
+	if (seq_tbl->options) {
+		info->seq_size = seq_tbl->options->extra_samplings + 1;
+	} else {
+		info->seq_size = 1;
+	}
+
+	info->state = ADC_STATE_BUSY;
+	irq_unlock(saved);
+
+	if (qm_adc_set_config(QM_ADC_0, &cfg) != 0) {
+		return -EINVAL;
+	}
+
+	adc_context_start_read(&info->ctx, seq_tbl);
+	error = adc_context_wait_for_completion(&info->ctx);
+	adc_context_release(&info->ctx, error);
+
+	if (info->state == ADC_STATE_ERROR) {
+		info->state = ADC_STATE_IDLE;
+		return -EIO;
+	}
+
+	return 0;
+}
+
+static int adc_qmsi_read(struct device *dev, const struct adc_sequence *seq_tbl)
+{
+	struct adc_info *info = dev->driver_data;
+	int ret;
+	adc_context_lock(&info->ctx, false, NULL);
+
+	ret = adc_qmsi_read_request(dev, seq_tbl);
 
 	return ret;
 }
-#else
-static int adc_qmsi_read(struct device *dev, struct adc_seq_table *seq_tbl)
-{
-	int i, ret = 0;
-	qm_adc_xfer_t xfer;
 
+#ifdef CONFIG_ADC_ASYNC
+/* Implementation of the ADC driver API function: adc_read_async. */
+static int adc_qmsi_read_async(struct device *dev,
+			       const struct adc_sequence *sequence,
+			       struct k_poll_signal *async)
+{
 	struct adc_info *info = dev->driver_data;
 
-	for (i = 0; i < seq_tbl->num_entries; i++) {
+	adc_context_lock(&info->ctx, true, async);
+	return adc_qmsi_read_request(dev, sequence);
+}
+#endif
 
-		xfer.ch = (qm_adc_channel_t *)&seq_tbl->entries[i].channel_id;
-		/* Just one channel at the time using the Zephyr sequence table */
-		xfer.ch_len = 1;
-		xfer.samples =
-			(qm_adc_sample_t *)seq_tbl->entries[i].buffer;
+static void adc_context_start_sampling(struct adc_context *ctx)
+{
+	struct adc_info *info = CONTAINER_OF(ctx, struct adc_info, ctx);
 
-		xfer.samples_len =
-		  (seq_tbl->entries[i].buffer_length)/sizeof(qm_adc_sample_t);
+	info->channels = ctx->sequence->channels;
 
-		xfer.callback = complete_callback;
-		xfer.callback_data = NULL;
+	adc_qmsi_start_conversion(info->dev);
+}
 
-		cfg.window = seq_tbl->entries[i].sampling_delay;
+static int adc_qmsi_channel_setup(struct device *dev,
+				  const struct adc_channel_cfg *channel_cfg)
+{
+	u8_t channel_id = channel_cfg->channel_id;
+	struct adc_info *info = dev->driver_data;
+	/* There is no provision in the IP to set
+	 * gain and reference voltage settings. So
+	 * ignoring these settings.
+	 */
 
-		adc_lock(info);
-
-		if (qm_adc_set_config(QM_ADC_0, &cfg) != 0) {
-			ret =  -EINVAL;
-			adc_unlock(info);
-			break;
-		}
-
-		/* ADC info used by the callbacks */
-		adc_context = info;
-
-		/* This is the interrupt driven API, will generate and interrupt and
-		 * call the complete_callback function once the samples have been
-		 * obtained
-		 */
-		if (qm_adc_irq_convert(QM_ADC_0, &xfer) != 0) {
-			adc_context = NULL;
-			ret =  -EIO;
-			adc_unlock(info);
-			break;
-		}
-
-		/* Wait for the interrupt to finish */
-		k_sem_take(&info->device_sync_sem, K_FOREVER);
-
-		if (info->state == ADC_STATE_ERROR) {
-			ret =  -EIO;
-			adc_unlock(info);
-			break;
-		}
-		adc_context = NULL;
-
-		/* Successful Analog to Digital conversion */
-		adc_unlock(info);
+	if (channel_id > QM_ADC_CH_18) {
+		return -EINVAL;
 	}
 
-	return ret;
+	if (info->state != ADC_STATE_IDLE) {
+		return -EAGAIN;
+	}
+
+	info->active_channels |= 1 << channel_id;
+	return 0;
 }
-#endif /* CONFIG_ADC_QMSI_POLL */
+
+static void adc_context_update_buffer_pointer(struct adc_context *ctx,
+					      bool repeat)
+{
+	struct adc_info *info = CONTAINER_OF(ctx, struct adc_info, ctx);
+	const struct adc_sequence *entry = ctx->sequence;
+
+	if (repeat) {
+		info->buffer = (u16_t *)entry->buffer;
+	}
+}
 
 static const struct adc_driver_api api_funcs = {
-	.enable  = adc_qmsi_enable,
-	.disable = adc_qmsi_disable,
-	.read    = adc_qmsi_read,
+	.channel_setup = adc_qmsi_channel_setup,
+	.read          = adc_qmsi_read,
+#ifdef CONFIG_ADC_ASYNC
+	.read_async    = adc_qmsi_read_async,
+#endif
 };
+
+
 
 static int adc_qmsi_init(struct device *dev)
 {
@@ -231,24 +328,19 @@ static int adc_qmsi_init(struct device *dev)
 	/* ADC clock  divider*/
 	clk_adc_set_div(CONFIG_ADC_QMSI_CLOCK_RATIO);
 
-	/* Set up config */
-	/* Clock cycles between the start of each sample */
-	cfg.window = CONFIG_ADC_QMSI_SERIAL_DELAY;
-	cfg.resolution = CONFIG_ADC_QMSI_SAMPLE_WIDTH;
-
-	qm_adc_set_config(QM_ADC_0, &cfg);
-
-	k_sem_init(&info->device_sync_sem, 0, UINT_MAX);
-
-	k_sem_init(&info->sem, 1, UINT_MAX);
 	info->state = ADC_STATE_IDLE;
+	info->dev = dev;
 
 	adc_config_irq();
-
+	k_sem_init(&info->sem, 0, UINT_MAX);
+	k_work_q_start(&info->workq, tstack, STACK_SIZE,
+		       CONFIG_MAIN_THREAD_PRIORITY);
+	k_delayed_work_init(&info->new_work, (k_work_handler_t)new_work_handler);
+	adc_qmsi_enable(dev);
+	adc_context_unlock_unconditionally(&info->ctx);
+	
 	return 0;
 }
-
-static struct adc_info adc_info_dev;
 
 DEVICE_AND_API_INIT(adc_qmsi, CONFIG_ADC_0_NAME, &adc_qmsi_init,
 		    &adc_info_dev, NULL,

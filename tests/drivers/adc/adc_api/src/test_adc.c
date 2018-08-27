@@ -119,6 +119,7 @@
 #define ADC_REFERENCE		ADC_REF_INTERNAL
 #define ADC_ACQUISITION_TIME	ADC_ACQ_TIME_DEFAULT
 #define ADC_1ST_CHANNEL_ID	10
+#define ADC_2ND_CHANNEL_ID	11
 
 #else
 #error "Unsupported board."
@@ -197,16 +198,12 @@ static int test_task_one_channel(void)
 {
 	int ret;
 
-#if defined(CONFIG_ARC)
 	const struct adc_sequence_options options = {
-		.interval_us     = 10,
-		.extra_samplings = 0,
+		.interval_us     = 30,
+		.extra_samplings = 1,
 	};
-#endif
 	const struct adc_sequence sequence = {
-#if defined(CONFIG_ARC)
 		.options     = &options,
-#endif
 		.channels    = BIT(ADC_1ST_CHANNEL_ID),
 		.buffer      = m_sample_buffer,
 		.buffer_size = sizeof(m_sample_buffer),
@@ -222,7 +219,7 @@ static int test_task_one_channel(void)
 	ret = adc_read(adc_dev, &sequence);
 	zassert_equal(ret, 0, "adc_read() failed with code %d", ret);
 
-	check_samples(1);
+	check_samples(2);
 
 	return TC_PASS;
 }
@@ -238,7 +235,12 @@ void test_adc_sample_one_channel(void)
 static int test_task_two_channels(void)
 {
 	int ret;
+	const struct adc_sequence_options options = {
+		.interval_us     = 30,
+	};
+
 	const struct adc_sequence sequence = {
+		.options     = &options,
 		.channels    = BIT(ADC_1ST_CHANNEL_ID) |
 			       BIT(ADC_2ND_CHANNEL_ID),
 		.buffer      = m_sample_buffer,
@@ -279,7 +281,7 @@ static int test_task_asynchronous_call(void)
 	int ret;
 	const struct adc_sequence_options options = {
 		.extra_samplings = 4,
-		.interval_us = 10,
+		.interval_us = 30,
 	};
 	const struct adc_sequence sequence = {
 		.options     = &options,
@@ -336,9 +338,9 @@ static int test_task_with_interval(void)
 {
 	int ret;
 	const struct adc_sequence_options options = {
-		.interval_us     = 100 * 1000UL,
+		.interval_us     = 30,
 		.callback        = sample_with_interval_callback,
-		.extra_samplings = 4,
+		.extra_samplings = 1,
 	};
 	const struct adc_sequence sequence = {
 		.options     = &options,
@@ -419,7 +421,7 @@ static int test_task_repeated_samplings(void)
 		 * Hence, the third sampling will not take place.
 		 */
 		.extra_samplings = 2,
-		.interval_us = 10,
+		.interval_us = 30,
 	};
 	const struct adc_sequence sequence = {
 		.options     = &options,
